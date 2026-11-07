@@ -1,7 +1,7 @@
 {
-  "checked_at": "2026-11-07T04:35:51.199008+00:00",
+  "checked_at": "2026-11-07T05:19:15.159500+00:00",
   "upstream_tag": "dsh-v0.2.2-rc.1",
   "upstream_sha": "66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db",
-  "recipe_hash": "375f468ac41504b8a18bddfbf60f1284401196d1f65c17db0cc53700458c8bbc",
-  "build_version": "0.2.2-rc.1.20261107.3.1"
+  "recipe_hash": "70eb217c3606b1e1df62f485352febde6bec6cc5c4a5133ffdaa8b5c24fad020",
+  "build_version": "0.2.2-rc.1.20261107.4.1"
 }
