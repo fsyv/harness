@@ -1,25 +1,114 @@
 /** Qualify the pinned signing identity through a real two-version Squirrel.Mac installation. */
 import assert from 'node:assert/strict'
 import { spawn, spawnSync, execFileSync } from 'node:child_process'
-import { createHash, X509Certificate } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { COMMUNITY_APP_ID, signCommunityApp } from '../apps/desktop/scripts/community-package.mjs'
 
 if (process.platform !== 'darwin' || process.arch !== 'x64') throw new Error('Qualification requires native Intel macOS')
-const root = await mkdtemp(join(process.env.RUNNER_TEMP, 'harness-update-'))
+const fixtures = join(process.env.RUNNER_TEMP, 'intel-update-fixtures')
 const source = resolve('apps/desktop/.desktop-build/targets/mac-x64/unsigned-artifacts/mac/DeepSeek Harness.app')
-const installed = join(root, 'installed', 'DeepSeek Harness.app')
-const candidate = join(root, 'candidate', 'DeepSeek Harness.app')
-const zip = join(root, 'update.zip')
+const appName = 'DeepSeek Harness.app'
 const bundle = path => join(path, 'Contents', 'Info.plist')
 const plist = (path, command) => execFileSync('/usr/libexec/PlistBuddy', ['-c', command, bundle(path)], { encoding: 'utf8' }).trim()
-const coordinator = pathToFileURL(resolve('apps/desktop/lib/types/update-coordinator.js')).href
-const communityClient = pathToFileURL(resolve('apps/desktop/lib/types/community-updates.js')).href
+
+const probe = `
+const { app } = require('electron')
+const { readFileSync } = require('node:fs')
+const { join, resolve } = require('node:path')
+const { createRequire } = require('node:module')
+const { pathToFileURL } = require('node:url')
+const root = resolve(process.resourcesPath, '../../../..')
+const feedPath = join(root, 'loopback-feed.json')
+const { url } = JSON.parse(readFileSync(feedPath, 'utf8'))
+const support = join(root, 'probe-support')
+app.setPath('userData', join(root, 'user-data'))
+app.setName('Harness update qualification')
+const report = async (path, options) => {
+  const response = await fetch(url + path, options)
+  if (!response.ok) throw new Error('Qualification HTTP ' + response.status)
+  return response.text()
+}
+app.whenReady().then(async () => {
+  app.dock.hide()
+  if (app.getVersion() === '0.0.2') {
+    await report('restarted?pid=' + process.pid)
+    app.exit(0)
+    return
+  }
+  const load = createRequire(join(support, 'update-coordinator.js'))
+  load('electron-updater').autoUpdater.updateConfigPath = feedPath
+  const { DesktopUpdateCoordinator } = await import(pathToFileURL(join(support, 'update-coordinator.js')).href)
+  const { communityUpdateClient } = await import(pathToFileURL(join(support, 'community-updates.js')).href)
+  const updates = new DesktopUpdateCoordinator(state => {
+    console.log(JSON.stringify(state))
+    if (state.phase === 'error') void report('failure', { method: 'POST', body: JSON.stringify(state) }).then(() => app.exit(1))
+  }, async () => true)
+  const state = await communityUpdateClient(updates).check(true)
+  if (state.phase !== 'ready') throw new Error('Expected downloaded update, got ' + JSON.stringify(state))
+  if (await report('ready') !== 'restart-approved') throw new Error('No restart approval')
+  await updates.install(state.version)
+}).catch(async error => {
+  console.error(error)
+  try { await report('failure', { method: 'POST', body: String(error.stack || error) }) }
+  finally { app.exit(1) }
+})
+`
+
+async function prepareFixtures() {
+  const staging = await mkdtemp(join(process.env.RUNNER_TEMP, 'harness-sign-update-'))
+  try {
+    const support = join(fixtures, 'probe-support')
+    await mkdir(support, { recursive: true })
+    for (const name of ['update-coordinator.js', 'update-error.js', 'update-http-executor.js', 'community-updates.js']) {
+      await cp(resolve('apps/desktop/lib/types', name), join(support, name))
+    }
+    // Use the product's exact Electron executables and nested signatures without its runtime payload.
+    for (const [role, version] of [['installed', '0.0.1'], ['candidate', '0.0.2']]) {
+      const path = join(staging, role, appName)
+      const resources = join(path, 'Contents', 'Resources')
+      await mkdir(join(resources, 'app'), { recursive: true })
+      for (const name of ['MacOS', 'Frameworks', 'Info.plist']) {
+        await cp(join(source, 'Contents', name), join(path, 'Contents', name), { recursive: true, verbatimSymlinks: true })
+      }
+      plist(path, `Set :CFBundleIdentifier ${COMMUNITY_APP_ID}`)
+      plist(path, `Set :CFBundleVersion ${version}`)
+      plist(path, `Set :CFBundleShortVersionString ${version}`)
+      // The signed fixture starts a small unpacked entry point and uses a loopback feed.
+      const fields = JSON.parse(execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', bundle(path)], { encoding: 'utf8' }))
+      if (fields.ElectronAsarIntegrity) plist(path, 'Delete :ElectronAsarIntegrity')
+      if (fields.NSAppTransportSecurity) plist(path, 'Delete :NSAppTransportSecurity')
+      plist(path, 'Add :NSAppTransportSecurity dict')
+      plist(path, 'Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true')
+      await writeFile(join(resources, 'app', 'package.json'), JSON.stringify({ name: 'harness-update-qualification', version, main: 'main.cjs' }))
+      await writeFile(join(resources, 'app', 'main.cjs'), probe)
+      await cp(join(source, 'Contents', 'Resources', 'app-update.yml'), join(resources, 'app-update.yml'))
+      signCommunityApp(path)
+      execFileSync('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', path, join(fixtures, `${role}.zip`)], { stdio: 'inherit' })
+    }
+  } finally {
+    await rm(staging, { recursive: true, force: true })
+  }
+}
+
+if (process.argv[2] === 'prepare') {
+  await prepareFixtures()
+  process.exit(0)
+}
+if (process.argv[2] !== 'verify') throw new Error('Expected prepare or verify')
+
+const untrusted = spawnSync('/usr/bin/security', ['verify-cert', '-c', 'intel-build/signing-cert.pem', '-p', 'codeSign', '-L'], { timeout: 30_000 })
+if (untrusted.error) throw untrusted.error
+assert.ok(untrusted.status > 0, 'Qualification must run without trusting the personal certificate')
+const workingDirectory = resolve('apps/desktop/.desktop-build')
+await mkdir(workingDirectory, { recursive: true })
+const root = await mkdtemp(join(workingDirectory, 'harness-update-'))
+const installed = join(root, 'installed', appName)
+const zip = join(fixtures, 'candidate.zip')
 let child
 let childClosed
 let restartedPid
@@ -62,75 +151,17 @@ const server = createServer((request, response) => {
 let zipHash
 let zipSize
 try {
-  await new Promise((resolvePromise, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolvePromise) })
-  const address = server.address()
-  const feed = `http://127.0.0.1:${address.port}/`
-  const probe = `
-const { app } = require('electron')
-app.setPath('userData', ${JSON.stringify(join(root, 'user-data'))})
-app.setName('Harness update qualification')
-const report = async (path, options) => {
-  const response = await fetch(${JSON.stringify(feed)} + path, options)
-  if (!response.ok) throw new Error('Qualification HTTP ' + response.status)
-  return response.text()
-}
-app.whenReady().then(async () => {
-  app.dock.hide()
-  if (app.getVersion() === '0.0.2') {
-    await report('restarted?pid=' + process.pid)
-    app.exit(0)
-    return
-  }
-  const { DesktopUpdateCoordinator } = await import(${JSON.stringify(coordinator)})
-  const { communityUpdateClient } = await import(${JSON.stringify(communityClient)})
-  const updates = new DesktopUpdateCoordinator(state => {
-    console.log(JSON.stringify(state))
-    if (state.phase === 'error') void report('failure', { method: 'POST', body: JSON.stringify(state) }).then(() => app.exit(1))
-  }, async () => true)
-  const state = await communityUpdateClient(updates).check(true)
-  if (state.phase !== 'ready') throw new Error('Expected downloaded update, got ' + JSON.stringify(state))
-  if (await report('ready') !== 'restart-approved') throw new Error('No restart approval')
-  await updates.install(state.version)
-}).catch(async error => {
-  console.error(error)
-  try { await report('failure', { method: 'POST', body: String(error.stack || error) }) }
-  finally { app.exit(1) }
-})
-`
-  // Retain the exact Electron executables and nested signatures from the product; omit its large runtime payload.
-  for (const [path, version] of [[installed, '0.0.1'], [candidate, '0.0.2']]) {
-    await mkdir(join(path, 'Contents', 'Resources', 'app'), { recursive: true })
-    for (const name of ['MacOS', 'Frameworks', 'Info.plist']) {
-      await cp(join(source, 'Contents', name), join(path, 'Contents', name), { recursive: true, verbatimSymlinks: true })
-    }
-    plist(path, `Set :CFBundleIdentifier ${COMMUNITY_APP_ID}`)
-    plist(path, `Set :CFBundleVersion ${version}`)
-    plist(path, `Set :CFBundleShortVersionString ${version}`)
-    // A probe uses an unpacked entry point; its signed resources do not contain the product ASAR.
-    const info = execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', bundle(path)], { encoding: 'utf8' })
-    const fields = JSON.parse(info)
-    if (fields.ElectronAsarIntegrity) plist(path, 'Delete :ElectronAsarIntegrity')
-    if (fields.NSAppTransportSecurity) plist(path, 'Delete :NSAppTransportSecurity')
-    plist(path, 'Add :NSAppTransportSecurity dict')
-    plist(path, 'Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true')
-    await writeFile(join(path, 'Contents', 'Resources', 'app', 'package.json'), JSON.stringify({ name: 'harness-update-qualification', version, main: 'main.cjs' }))
-    await writeFile(join(path, 'Contents', 'Resources', 'app', 'main.cjs'), probe)
-    await writeFile(join(path, 'Contents', 'Resources', 'app-update.yml'), JSON.stringify({ provider: 'generic', url: feed, channel: 'nightly', updaterCacheDirName: `harness-qualification-${process.pid}` }))
-    signCommunityApp(path)
-  }
-  const certificatePath = process.env.HARNESS_SIGNING_CERTIFICATE
-  const certificate = new X509Certificate(await readFile(certificatePath))
-  execFileSync('sudo', ['-n', '/usr/bin/security', 'remove-trusted-cert', '-d', certificatePath], { stdio: 'inherit', timeout: 30_000 })
-  execFileSync('sudo', ['-n', '/usr/bin/security', 'delete-certificate', '-Z', certificate.fingerprint256.replaceAll(':', ''),
-    '/Library/Keychains/System.keychain'], { stdio: 'inherit', timeout: 30_000 })
-  execFileSync('/usr/bin/security', ['delete-keychain', process.env.HARNESS_SIGNING_KEYCHAIN], { stdio: 'inherit' })
-  const untrusted = spawnSync('/usr/bin/security', ['verify-cert', '-c', certificatePath, '-p', 'codeSign'], { timeout: 30_000 })
-  if (untrusted.error) throw untrusted.error
-  assert.notEqual(untrusted.status, 0, 'Qualification must run without trusting the personal certificate')
-  execFileSync('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', candidate, zip], { stdio: 'inherit' })
+  await cp(join(fixtures, 'probe-support'), join(root, 'probe-support'), { recursive: true })
+  await mkdir(join(root, 'installed'))
+  await mkdir(join(root, 'user-data'))
+  execFileSync('/usr/bin/ditto', ['-x', '-k', join(fixtures, 'installed.zip'), join(root, 'installed')], { stdio: 'inherit' })
   const bytes = await readFile(zip)
   zipHash = createHash('sha512').update(bytes).digest('base64')
   zipSize = bytes.length
+  await new Promise((resolvePromise, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolvePromise) })
+  const address = server.address()
+  await writeFile(join(root, 'loopback-feed.json'), JSON.stringify({ provider: 'generic', url: `http://127.0.0.1:${address.port}/`,
+    channel: 'nightly', updaterCacheDirName: `harness-qualification-${process.pid}` }))
   const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
     !/KEY|SECRET|TOKEN|PASSWORD|^HARNESS_SIGNING|^NODE_OPTIONS$|^ELECTRON_RUN_AS_NODE$/iu.test(name)))
   child = spawn(join(installed, 'Contents', 'MacOS', 'DeepSeek Harness'), [], { env: environment, stdio: 'inherit' })

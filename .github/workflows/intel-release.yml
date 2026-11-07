@@ -108,8 +108,16 @@ jobs:
         run: python3 intel-build/prepare-signing.py
       - name: Build and package the signed Intel application
         run: pnpm run package:desktop:mac:x64:unsigned --build-version "$BUILD_VERSION"
-      - name: Verify native signed update installation
-        run: node intel-build/test-native-update.mjs
+      - name: Prepare signed native update fixtures
+        run: node intel-build/test-native-update.mjs prepare
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: intel-update-fixtures
+          path: ${{ runner.temp }}/intel-update-fixtures/
+          if-no-files-found: error
+          overwrite: true
+          compression-level: 0
+          retention-days: 2
       - name: Collect verified release assets
         run: node intel-build/collect-release.mjs
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -117,6 +125,7 @@ jobs:
           name: intel-release
           path: ${{ runner.temp }}/intel-release/
           if-no-files-found: error
+          overwrite: true
           compression-level: 0
           retention-days: 14
       - name: Delete the temporary signing keychain
@@ -126,8 +135,39 @@ jobs:
             security delete-keychain "$HARNESS_SIGNING_KEYCHAIN"
           fi
 
-  publish:
+  verify-update:
     needs: [sync, build]
+    runs-on: macos-15-intel
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.sync.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: intel-update-fixtures
+          path: ${{ runner.temp }}/intel-update-fixtures
+      - name: Verify native update installation on a clean runner
+        run: node intel-build/test-native-update.mjs verify
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: intel-native-update-report
+          path: ${{ runner.temp }}/native-update-test.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+
+  publish:
+    needs: [sync, build, verify-update]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -141,9 +181,15 @@ jobs:
         with:
           name: intel-release
           path: ${{ runner.temp }}/intel-release
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: intel-native-update-report
+          path: ${{ runner.temp }}/intel-release
       - name: Verify artifact transfer
         working-directory: ${{ runner.temp }}/intel-release
-        run: sha256sum --check SHA256SUMS
+        run: |
+          sha256sum --check SHA256SUMS
+          sha256sum native-update-test.json >> SHA256SUMS
       - name: Publish the version and advance the update feed
         env:
           GH_TOKEN: ${{ github.token }}

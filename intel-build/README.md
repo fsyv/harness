@@ -22,7 +22,7 @@ The `intel-updates` Release stores only update metadata; installers belong to im
 - Skip packaging when the upstream commit and recipe match a successful published release; still commit the monthly check record to maintain sync activity.
 - Stop publication if the upstream tag, patch integration points, packaging, signing, or native update test fails; retain the previous update feed.
 
-The workflow builds on `macos-15-intel`, runs upstream runtime checks after signing, and uses the same Electron binaries, update coordinator, and signing identity to download, explicitly restart, replace, and launch two versions of a test App. It removes the build machine's certificate trust settings before that test to cover users who have not installed the certificate. Publication follows successful qualification. This does not replace first-installation and functional checks on the actual laptop.
+The workflow builds on `macos-15-intel` and runs upstream runtime checks after signing. A fresh Intel runner checks that the certificate is untrusted, then uses the same Electron binaries, update coordinator, and signing identity to download, explicitly restart, replace, and launch two versions of a test App. Publication follows successful qualification. Run the first-installation and functional checks on the actual laptop.
 
 Build versions extend the upstream version, for example `0.2.2-rc.1.20261107.1.1`. Stable versions follow upstream's packaging rules with a `-test.<date>.<run>.<attempt>` suffix. All personal builds are marked as prereleases.
 

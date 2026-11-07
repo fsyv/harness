@@ -28,7 +28,6 @@ if (metadata.path) metadata.path = base + encodeURIComponent(metadata.path)
 for (const name of files) copyFileSync(join(directory, name), join(destination, name))
 writeFileSync(join(destination, 'nightly-mac.yml'), dump(metadata, { lineWidth: -1 }))
 copyFileSync('LICENSE', join(destination, 'LICENSE.upstream.txt'))
-copyFileSync(join(process.env.RUNNER_TEMP, 'native-update-test.json'), join(destination, 'native-update-test.json'))
 writeFileSync(join(destination, 'build-info.json'), JSON.stringify({
   version: metadata.version, upstreamTag: process.env.UPSTREAM_TAG, upstreamCommit: process.env.UPSTREAM_SHA,
   sourceCommit: process.env.SOURCE_COMMIT, recipeHash: process.env.RECIPE_HASH,
