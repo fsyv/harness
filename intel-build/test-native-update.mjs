@@ -1,7 +1,7 @@
 /** Qualify the pinned signing identity through a real two-version Squirrel.Mac installation. */
 import assert from 'node:assert/strict'
-import { spawn, execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { spawn, spawnSync, execFileSync } from 'node:child_process'
+import { createHash, X509Certificate } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
@@ -118,7 +118,15 @@ app.whenReady().then(async () => {
     await writeFile(join(path, 'Contents', 'Resources', 'app-update.yml'), JSON.stringify({ provider: 'generic', url: feed, channel: 'nightly', updaterCacheDirName: `harness-qualification-${process.pid}` }))
     signCommunityApp(path)
   }
-  execFileSync('/usr/bin/security', ['remove-trusted-cert', process.env.HARNESS_SIGNING_CERTIFICATE], { stdio: 'inherit' })
+  const certificatePath = process.env.HARNESS_SIGNING_CERTIFICATE
+  const certificate = new X509Certificate(await readFile(certificatePath))
+  execFileSync('sudo', ['-n', '/usr/bin/security', 'remove-trusted-cert', '-d', certificatePath], { stdio: 'inherit', timeout: 30_000 })
+  execFileSync('sudo', ['-n', '/usr/bin/security', 'delete-certificate', '-Z', certificate.fingerprint256.replaceAll(':', ''),
+    '/Library/Keychains/System.keychain'], { stdio: 'inherit', timeout: 30_000 })
+  execFileSync('/usr/bin/security', ['delete-keychain', process.env.HARNESS_SIGNING_KEYCHAIN], { stdio: 'inherit' })
+  const untrusted = spawnSync('/usr/bin/security', ['verify-cert', '-c', certificatePath, '-p', 'codeSign'], { timeout: 30_000 })
+  if (untrusted.error) throw untrusted.error
+  assert.notEqual(untrusted.status, 0, 'Qualification must run without trusting the personal certificate')
   execFileSync('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', candidate, zip], { stdio: 'inherit' })
   const bytes = await readFile(zip)
   zipHash = createHash('sha512').update(bytes).digest('base64')
@@ -136,7 +144,7 @@ app.whenReady().then(async () => {
   await childClosed
   // The relaunched process is owned by ShipIt; observe its exit before removing its bundle.
   for (let attempt = 0; ; attempt++) {
-    try { process.kill(restartedPid, 0) } catch (error) { if (error.code === 'ESRCH') break; throw error }
+    try { process.kill(restartedPid, 0) } catch (error) { if (error.code === 'ESRCH') { restartedPid = undefined; break }; throw error }
     if (attempt >= 100) throw new Error('Relaunched qualification app did not exit')
     await delay(100)
   }

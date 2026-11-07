@@ -6,11 +6,17 @@ import subprocess
 import tempfile
 
 
-def security(stage, arguments):
+def security(stage, arguments, administrator=False):
     # Passwords are command arguments to Apple's tool; never render a failed command or its arguments.
-    result = subprocess.run(["/usr/bin/security", *arguments], capture_output=True)
+    print(f"Signing setup: {stage}", flush=True)
+    command = (["sudo", "-n"] if administrator else []) + ["/usr/bin/security", *arguments]
+    try:
+        result = subprocess.run(command, capture_output=True, timeout=45)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"macOS signing setup timed out at {stage}") from None
     if result.returncode:
-        raise RuntimeError(f"macOS signing setup failed at {stage} (exit {result.returncode})")
+        detail = result.stderr.decode(errors="replace").replace(os.environ["MACOS_SIGNING_PASSWORD"], "[redacted]")
+        raise RuntimeError(f"macOS signing setup failed at {stage} (exit {result.returncode}): {detail}")
 
 
 directory = Path(tempfile.mkdtemp(prefix="harness-signing-", dir=os.environ["RUNNER_TEMP"]))
@@ -25,7 +31,8 @@ try:
     security("keychain-timeout", ["set-keychain-settings", "-lut", "21600", str(keychain)])
     security("unlock-keychain", ["unlock-keychain", "-p", password, str(keychain)])
     security("import-identity", ["import", str(p12), "-k", str(keychain), "-P", password, "-T", "/usr/bin/codesign"])
-    security("code-signing-trust", ["add-trusted-cert", "-r", "trustRoot", "-p", "codeSign", "-k", str(keychain), str(certificate)])
+    security("code-signing-trust", ["add-trusted-cert", "-d", "-r", "trustRoot", "-p", "codeSign",
+                                   "-k", "/Library/Keychains/System.keychain", str(certificate)], administrator=True)
     security("key-access", ["set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s", "-k", password, str(keychain)])
     with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as file:
         file.write(f"HARNESS_SIGNING_KEYCHAIN={keychain}\nHARNESS_SIGNING_CERTIFICATE={certificate}\n")

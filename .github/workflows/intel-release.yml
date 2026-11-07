@@ -98,9 +98,10 @@ jobs:
         run: |
           node --test intel-build/test-updates.mjs
           pnpm exec vitest run apps/desktop/tests/update-coordinator.spec.ts apps/desktop/tests/update-schedule.spec.ts
-      - name: Verify documentation on the native platform
-        run: pnpm run doc-sync
+      - name: Verify maintained documentation
+        run: pnpm run verify-translation-pairing intel-build/README.md
       - name: Import the persistent personal signing identity
+        timeout-minutes: 3
         env:
           MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
           MACOS_SIGNING_PASSWORD: ${{ secrets.MACOS_SIGNING_PASSWORD }}
