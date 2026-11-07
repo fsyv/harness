@@ -3,5 +3,12 @@
   "upstream_tag": "dsh-v0.2.2-rc.1",
   "upstream_sha": "66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db",
   "recipe_hash": "25face8d9248ec32e16ccdf7f35bc7eba77f2977db5b4e4eef8154dd04bfdd76",
-  "build_version": "0.2.2-rc.1.20261107.5.1"
+  "build_version": "0.2.2-rc.1.20261107.5.1",
+  "last_success": {
+    "version": "0.2.2-rc.1.20261107.5.1",
+    "release_tag": "v0.2.2-rc.1.20261107.5.1",
+    "upstream_sha": "66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db",
+    "recipe_hash": "25face8d9248ec32e16ccdf7f35bc7eba77f2977db5b4e4eef8154dd04bfdd76",
+    "source_commit": "709900bab6d671d7a71ea3491af5ec704d9c7ed5"
+  }
 }
