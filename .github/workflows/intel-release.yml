@@ -106,13 +106,8 @@ jobs:
           MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
           MACOS_SIGNING_PASSWORD: ${{ secrets.MACOS_SIGNING_PASSWORD }}
         run: python3 intel-build/prepare-signing.py
-      - name: Build the application and run upstream runtime checks
-        run: pnpm run package:desktop:mac:x64:unsigned --dir --build-version "$BUILD_VERSION"
-      - name: Create self-signed DMG and update ZIP
-        run: >-
-          pnpm --dir apps/desktop exec electron-builder --config electron-builder.config.mjs --mac dmg zip --x64
-          --prepackaged "$GITHUB_WORKSPACE/apps/desktop/.desktop-build/targets/mac-x64/unsigned-artifacts/mac/DeepSeek Harness.app"
-          --publish never
+      - name: Build and package the signed Intel application
+        run: pnpm run package:desktop:mac:x64:unsigned --build-version "$BUILD_VERSION"
       - name: Verify native signed update installation
         run: node intel-build/test-native-update.mjs
       - name: Collect verified release assets
