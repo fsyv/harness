@@ -1,0 +1,154 @@
+name: Intel macOS release
+
+on:
+  schedule:
+    # 10:17 Asia/Shanghai on the first day of each month.
+    - cron: '17 2 1 * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Upstream dsh-v* tag; empty selects the highest version, including prereleases'
+        type: string
+        default: ''
+      force:
+        description: 'Rebuild even when this tag and recipe were already published'
+        type: boolean
+        default: false
+  push:
+    branches: [intel]
+    paths:
+      - 'intel-build/**'
+      - '!intel-build/state.json'
+      - '.github/workflows/intel-release.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: intel-macos-release
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'fsyv/harness'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      build: ${{ steps.sync.outputs.build }}
+      commit: ${{ steps.sync.outputs.commit }}
+      tag: ${{ steps.sync.outputs.tag }}
+      upstream_sha: ${{ steps.sync.outputs.upstream_sha }}
+      version: ${{ steps.sync.outputs.version }}
+      recipe_hash: ${{ steps.sync.outputs.recipe_hash }}
+      release_tag: ${{ steps.sync.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test version selection and overlay guards
+        run: python3 intel-build/test_sync.py
+      - name: Sync the selected upstream tag and maintained overlay
+        id: sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_FORCE: ${{ inputs.force }}
+        run: python3 intel-build/sync.py
+
+  build:
+    needs: sync
+    if: needs.sync.outputs.build == 'true'
+    runs-on: macos-15-intel
+    timeout-minutes: 180
+    env:
+      CI: 'true'
+      DSH_TELEMETRY_DISABLED: '1'
+      NODE_OPTIONS: --max-old-space-size=8192
+      HARNESS_COMMUNITY_BUILD: '1'
+      DSH_DESKTOP_UNSIGNED: '1'
+      DSH_DESKTOP_TARGET_PLATFORM: darwin
+      DSH_DESKTOP_TARGET_ARCH: x64
+      DSH_DESKTOP_BUILD_VERSION: ${{ needs.sync.outputs.version }}
+      BUILD_VERSION: ${{ needs.sync.outputs.version }}
+      RELEASE_TAG: ${{ needs.sync.outputs.release_tag }}
+      UPSTREAM_TAG: ${{ needs.sync.outputs.tag }}
+      UPSTREAM_SHA: ${{ needs.sync.outputs.upstream_sha }}
+      SOURCE_COMMIT: ${{ needs.sync.outputs.commit }}
+      RECIPE_HASH: ${{ needs.sync.outputs.recipe_hash }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.sync.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+        with:
+          cache: true
+      - name: Verify native Intel execution
+        run: |
+          test "$(uname -m)" = x86_64
+          test "$(node -p process.arch)" = x64
+      - run: pnpm install --frozen-lockfile
+      - name: Verify update behavior
+        run: |
+          node --test intel-build/test-updates.mjs
+          pnpm exec vitest run apps/desktop/tests/update-coordinator.spec.ts apps/desktop/tests/update-schedule.spec.ts
+      - name: Verify documentation on the native platform
+        run: pnpm run doc-sync
+      - name: Import the persistent personal signing identity
+        env:
+          MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
+          MACOS_SIGNING_PASSWORD: ${{ secrets.MACOS_SIGNING_PASSWORD }}
+        run: python3 intel-build/prepare-signing.py
+      - name: Build the application and run upstream runtime checks
+        run: pnpm run package:desktop:mac:x64:unsigned --dir --build-version "$BUILD_VERSION"
+      - name: Create self-signed DMG and update ZIP
+        run: >-
+          pnpm --dir apps/desktop exec electron-builder --config electron-builder.config.mjs --mac dmg zip --x64
+          --prepackaged "$GITHUB_WORKSPACE/apps/desktop/.desktop-build/targets/mac-x64/unsigned-artifacts/mac/DeepSeek Harness.app"
+          --publish never
+      - name: Verify native signed update installation
+        run: node intel-build/test-native-update.mjs
+      - name: Collect verified release assets
+        run: node intel-build/collect-release.mjs
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: intel-release
+          path: ${{ runner.temp }}/intel-release/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Delete the temporary signing keychain
+        if: always()
+        run: |
+          if [[ -n "${HARNESS_SIGNING_KEYCHAIN:-}" && -f "$HARNESS_SIGNING_KEYCHAIN" ]]; then
+            security delete-keychain "$HARNESS_SIGNING_KEYCHAIN"
+          fi
+
+  publish:
+    needs: [sync, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.sync.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: intel-release
+          path: ${{ runner.temp }}/intel-release
+      - name: Verify artifact transfer
+        working-directory: ${{ runner.temp }}/intel-release
+        run: sha256sum --check SHA256SUMS
+      - name: Publish the version and advance the update feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 intel-build/publish.py

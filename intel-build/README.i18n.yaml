@@ -1,0 +1,16 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write intel-build/README.md
+/personal-intel-macos-builds:
+  en: 4cc7097202973e51
+  zh: 529d57c8be6374e1
+/personal-intel-macos-builds/installation-and-automatic-updates:
+  en: 46ef9876b6358c92
+  zh: b5a9655f2117fdc9
+/personal-intel-macos-builds/automated-builds:
+  en: 54fb82b415a7d79d
+  zh: 38074576e191f625
+/personal-intel-macos-builds/maintenance:
+  en: 0f61e85327ec62f6
+  zh: fe23af2fb8e6af3f

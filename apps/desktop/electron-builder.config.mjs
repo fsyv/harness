@@ -2,4 +2,5 @@
 import { createElectronBuilderConfig } from './scripts/electron-builder-config.mjs'
 
 export { createElectronBuilderConfig }
-export default createElectronBuilderConfig()
+import { communityPackageConfig } from './scripts/community-package.mjs'
+export default communityPackageConfig(createElectronBuilderConfig())
