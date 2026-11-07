@@ -1,9 +1,9 @@
 {
-  "checked_at": "2026-11-07T05:51:28.244740+00:00",
+  "checked_at": "2026-11-07T06:33:01.915992+00:00",
   "upstream_tag": "dsh-v0.2.2-rc.1",
   "upstream_sha": "66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db",
   "recipe_hash": "25face8d9248ec32e16ccdf7f35bc7eba77f2977db5b4e4eef8154dd04bfdd76",
-  "build_version": "0.2.2-rc.1.20261107.5.1",
+  "build_version": "0.2.2-rc.1.20261107.6.1",
   "last_success": {
     "version": "0.2.2-rc.1.20261107.5.1",
     "release_tag": "v0.2.2-rc.1.20261107.5.1",
